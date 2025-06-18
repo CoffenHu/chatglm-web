@@ -18,7 +18,6 @@ import gen_data
 log_folder = os.path.join(abspath(dirname(__file__)), "log")
 logger.add(os.path.join(log_folder, "{time}.log"), level="INFO")
 
-
 DEFAULT_DB_SIZE = 100000
 
 massage_store = MessageStore(db_path="message_store.json", table_name="chatgpt", max_size=DEFAULT_DB_SIZE)
@@ -26,7 +25,6 @@ massage_store = MessageStore(db_path="message_store.json", table_name="chatgpt",
 # service_timeout = None
 
 app = FastAPI()
-
 
 stream_response_headers = {
     "Content-Type": "application/octet-stream",
@@ -43,7 +41,6 @@ async def config():
     ))
 
 
-
 async def process(prompt, options, params, message_store, is_knowledge, history=None):
     """
     发文字消息
@@ -53,11 +50,10 @@ async def process(prompt, options, params, message_store, is_knowledge, history=
         logger.error("Prompt is empty.")
         yield Errors.PROMPT_IS_EMPTY.value
         return
-
-
+    
     try:
         chat = {"role": "user", "content": prompt}
-
+        
         # 组合历史消息
         if options:
             parent_message_id = options.get("parentMessageId")
@@ -69,11 +65,10 @@ async def process(prompt, options, params, message_store, is_knowledge, history=
         else:
             parent_message_id = None
             messages = [chat]
-
+        
         # 记忆
         messages = messages[-params['memory_count']:]
-
-
+        
         history_formatted = []
         if options is not None:
             history_formatted = []
@@ -87,42 +82,53 @@ async def process(prompt, options, params, message_store, is_knowledge, history=
                     tmp = []
                 else:
                     continue
-
-        uid = "chatglm"+uuid.uuid4().hex
-        footer=''
+        
+        uid = "chatglm" + uuid.uuid4().hex
+        footer = ''
         if is_knowledge:
             response_d = knowledge.find_whoosh(prompt)
             output_sources = [i['title'] for i in response_d]
-            results ='\n---\n'.join([i['content'] for i in response_d])
-            prompt=  f'system:基于以下内容，用中文简洁和专业回答用户的问题。\n\n'+results+'\nuser:'+prompt
-            footer=  "\n参考：\n"+('\n').join(output_sources)+''
+            results = '\n---\n'.join([i['content'] for i in response_d])
+            prompt = f'system:基于以下内容，用中文简洁和专业回答用户的问题。\n\n' + results + '\nuser:' + prompt
+            
+            if output_sources:
+                # 去重
+                output_sources_set = set(output_sources)
+                
+                footer = "\n参考：\n" + ('\n').join(output_sources_set) + ''
         # yield footer
-        for response, history in model.stream_chat(tokenizer, prompt, history_formatted, max_length=params['max_length'],
-                                                    top_p=params['top_p'], temperature=params['temperature']):
+        for response, history in model.stream_chat(tokenizer, prompt, history_formatted,
+                                                   max_length=params['max_length'],
+                                                   top_p=params['top_p'], temperature=params['temperature']):
             message = json.dumps(dict(
                 role="AI",
                 id=uid,
                 parentMessageId=parent_message_id,
-                text=response+footer,
+                text=response + footer,
             ))
             yield "data: " + message
-
+    
     except:
         err = traceback.format_exc()
         logger.error(err)
         yield Errors.SOMETHING_WRONG.value
         return
-
+    
     try:
         # save to cache
         chat = {"role": "AI", "content": response}
         messages.append(chat)
-
+        
         parent_message_id = uid
         message_store.set(parent_message_id, messages)
     except:
         err = traceback.format_exc()
         logger.error(err)
+
+
+@app.post("chat_process")
+async def chat_process_new(request_data: dict):
+    return chat_process(request_data)
 
 
 @app.post("/chat-process")
@@ -132,13 +138,13 @@ async def chat_process(request_data: dict):
     top_p = request_data['top_p']
     temperature = request_data['temperature']
     options = request_data['options']
-    if request_data['memory'] == 1 :
+    if request_data['memory'] == 1:
         memory_count = 5
     elif request_data['memory'] == 50:
         memory_count = 20
     else:
         memory_count = 999
-
+    
     if 1 == request_data["top_p"]:
         top_p = 0.2
     elif 50 == request_data["top_p"]:
@@ -147,8 +153,10 @@ async def chat_process(request_data: dict):
         top_p = 0.9
     if temperature is None:
         temperature = 0.9
+    
     if top_p is None:
         top_p = 0.7
+    
     is_knowledge = request_data['is_knowledge']
     params = {
         "max_length": max_length,
@@ -167,18 +175,19 @@ if __name__ == "__main__":
     parser.add_argument('--host', '-H', type=str, help='监听Host', default='0.0.0.0')
     parser.add_argument('--port', '-P', type=int, help='监听端口号', default=3002)
     args = parser.parse_args()
-
+    
     import os
+    
     model_path = os.getenv('model_path')
     # model_name = "THUDM/chatglm-6b"
     quantize = int(args.quantize)
     model = None
     if args.device == 'cpu':
-        model_path = model_path if  model_path else "THUDM/chatglm2-6b-int4" 
+        model_path = model_path if model_path else "THUDM/chatglm2-6b-int4"
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         model = AutoModel.from_pretrained(model_path, trust_remote_code=True).float()
     else:
-        model_path = model_path if  model_path else "THUDM/chatglm2-6b" 
+        model_path = model_path if model_path else "THUDM/chatglm2-6b"
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         if quantize == 16:
             model = AutoModel.from_pretrained(model_path, trust_remote_code=True).half().cuda()
